@@ -2,9 +2,16 @@
 Rilevamento giocatori (YOLO), validazione manuale squadra, posizionamento della palla,
 calibrazione del campo tramite clic diretto sull'immagine, e proiezione 2D in scala reale.
 
-Le operazioni pesanti (rilevamento YOLO, calcolo omografia + disegno della vista 2D)
-sono messe in cache e vengono ricalcolate solo quando si preme il relativo tasto
-"Applica", non ad ogni clic — per restare reattivi durante la validazione manuale.
+Tutte le operazioni pesanti o che richiedono più clic in sequenza sono pensate per
+restare reattive:
+- il modello YOLO e il rilevamento sono in cache (si ricalcolano solo se cambi
+  immagine o soglia);
+- le correzioni manuali ai giocatori (squadra, eliminazioni, nuovi giocatori) e lo
+  spostamento della palla restano "in bozza" mentre clicchi, e diventano definitive
+  solo quando premi "✅ Applica tutte le modifiche" — così puoi correggere più
+  giocatori sbagliati di fila senza attese tra un clic e l'altro;
+- il calcolo dell'omografia e il disegno della vista 2D si aggiornano solo premendo
+  "Applica calibrazione / aggiorna vista 2D".
 """
 import csv
 import io
@@ -26,8 +33,11 @@ st.set_page_config(page_title="Vista Tattica dall'Alto", page_icon="⚽", layout
 DISPLAY_MAX_W = 980
 TEAM_COLORS = {0: (224, 102, 43), 1: (36, 97, 201), -1: (138, 138, 128)}  # RGB
 TEAM_COLORS_HEX = {0: "#e0662b", 1: "#2461c9", -1: "#8a8a80"}
+TEAM_LABELS = {0: "Squadra A", 1: "Squadra B", -1: "Arbitro/altro"}
 CALIB_COLOR = (255, 47, 208)
 BALL_COLOR = (255, 255, 255)
+PENDING_COLOR = (255, 200, 0)
+DELETE_COLOR = (235, 60, 60)
 
 VIDEO_EXT = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -59,17 +69,29 @@ def run_detection_cached(frame_bytes: bytes, conf: float):
 # ----------------------------------------------------------------------
 def init_state():
     defaults = {
-        "frame": None,            # np.array BGR, risoluzione originale
-        "players": [],            # lista di dict id/bbox/x/y/team
-        "ball": None,             # dict {"x":.., "y":..} oppure None
-        "calib_points": [],       # lista di dict img/world/label
-        "pending_click": None,    # ultimo clic in coordinate immagine originale (modo calib)
-        "last_raw_click": None,   # per deduplicare i clic del componente
+        "frame": None,             # np.array BGR, risoluzione originale
+        "base_img": None,          # PIL.Image già ridimensionata, senza annotazioni (cache manuale)
+        "img_scale": 1.0,
+
+        "players": [],              # lista definitiva: dict id/bbox/x/y/team
+        "ball": None,                # dict definitivo {"x":.., "y":..} oppure None
+        "calib_points": [],          # lista di dict img/world/label
+
+        # --- bozza: modifiche fatte ma non ancora "Applicate" ---
+        "player_edits": {},          # {player_id: nuova_squadra}
+        "players_to_delete": set(),  # id di giocatori definitivi segnati per eliminazione
+        "new_players_draft": [],     # nuovi giocatori in attesa: [{id, x, y, team}]
+        "ball_draft": None,          # None = nessuna modifica; "REMOVE"; oppure {"x","y"}
+        "next_temp_id": -1,
+
+        "pending_click": None,       # ultimo clic in coordinate immagine originale (modo calib)
+        "last_raw_click": None,      # per deduplicare i clic del componente
         "selected_player_id": None,
         "next_player_id": 0,
-        "detected_preview": None,  # risultato cache in attesa di "Applica"
-        "calib_dirty": True,       # True se la vista 2D va ricalcolata
-        "view": None,              # ultima vista 2D applicata: {H, errors, rows, png}
+        "detected_preview": None,    # risultato rilevamento cache, in attesa di "Applica alla lista"
+
+        "calib_dirty": True,         # True se la vista 2D va ricalcolata
+        "view": None,                # ultima vista 2D applicata: {H, errors, rows, png}
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -83,37 +105,126 @@ def mark_dirty():
     st.session_state.calib_dirty = True
 
 
+def set_frame(frame):
+    """Imposta un nuovo frame sorgente e precalcola l'immagine di base ridimensionata
+    (fatto una sola volta qui, non ad ogni clic, per restare reattivi)."""
+    h, w = frame.shape[:2]
+    scale = min(1.0, DISPLAY_MAX_W / w)
+    disp_w, disp_h = int(w * scale), int(h * scale)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    st.session_state.frame = frame
+    st.session_state.base_img = Image.fromarray(rgb).resize((disp_w, disp_h))
+    st.session_state.img_scale = scale
+    st.session_state.players = []
+    st.session_state.ball = None
+    st.session_state.calib_points = []
+    st.session_state.detected_preview = None
+    st.session_state.view = None
+    st.session_state.calib_dirty = True
+    discard_all_pending()
+
+
+def effective_players():
+    """Lista "vista corrente" dei giocatori: definitivi + bozze di modifica, per
+    disegno e selezione. Non tocca lo stato definitivo."""
+    items = []
+    for p in st.session_state.players:
+        items.append({
+            "id": p["id"], "x": p["x"], "y": p["y"],
+            "team": st.session_state.player_edits.get(p["id"], p["team"]),
+            "pending_edit": p["id"] in st.session_state.player_edits,
+            "pending_delete": p["id"] in st.session_state.players_to_delete,
+            "is_draft": False,
+        })
+    for d in st.session_state.new_players_draft:
+        items.append({
+            "id": d["id"], "x": d["x"], "y": d["y"], "team": d["team"],
+            "pending_edit": False, "pending_delete": False, "is_draft": True,
+        })
+    return items
+
+
+def pending_count():
+    n = len(st.session_state.player_edits) + len(st.session_state.players_to_delete) \
+        + len(st.session_state.new_players_draft)
+    if st.session_state.ball_draft is not None:
+        n += 1
+    return n
+
+
+def apply_all_pending():
+    new_list = []
+    for p in st.session_state.players:
+        if p["id"] in st.session_state.players_to_delete:
+            continue
+        if p["id"] in st.session_state.player_edits:
+            p = dict(p)
+            p["team"] = st.session_state.player_edits[p["id"]]
+        new_list.append(p)
+    for d in st.session_state.new_players_draft:
+        new_list.append({
+            "id": st.session_state.next_player_id, "bbox": None, "conf": None,
+            "x": d["x"], "y": d["y"], "team": d["team"] if d["team"] is not None else -1,
+        })
+        st.session_state.next_player_id += 1
+    st.session_state.players = new_list
+
+    if st.session_state.ball_draft is not None:
+        st.session_state.ball = None if st.session_state.ball_draft == "REMOVE" else st.session_state.ball_draft
+
+    st.session_state.player_edits = {}
+    st.session_state.players_to_delete = set()
+    st.session_state.new_players_draft = []
+    st.session_state.ball_draft = None
+    st.session_state.selected_player_id = None
+    mark_dirty()
+
+
+def discard_all_pending():
+    st.session_state.player_edits = {}
+    st.session_state.players_to_delete = set()
+    st.session_state.new_players_draft = []
+    st.session_state.ball_draft = None
+    st.session_state.selected_player_id = None
+
+
 # ----------------------------------------------------------------------
 # Utility di disegno
 # ----------------------------------------------------------------------
-def frame_to_display_image(frame_bgr, mode, players, ball, calib_points, pending_click, selected_id):
-    """Converte il frame in una PIL.Image RGB ridimensionata per la UI, con le annotazioni
-    disegnate sopra. Ritorna (img_pil, scale) dove scale converte coordinate
-    immagine-mostrata -> coordinate immagine-originale (moltiplicare per 1/scale)."""
-    h, w = frame_bgr.shape[:2]
-    scale = min(1.0, DISPLAY_MAX_W / w)
-    disp_w, disp_h = int(w * scale), int(h * scale)
-
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(rgb).resize((disp_w, disp_h))
+def render_display_image(mode, base_img, scale, players_eff, ball, ball_draft,
+                          calib_points, pending_click, selected_id):
+    """Copia l'immagine di base (già ridimensionata, in cache) e disegna sopra solo
+    le annotazioni leggere: niente resize/conversione colore ad ogni clic."""
+    img = base_img.copy()
     draw = ImageDraw.Draw(img)
 
-    # giocatori: sempre visibili per contesto, evidenziati in modo "players"
-    for p in players:
-        x, y = p["x"] * scale, p["y"] * scale
-        color = TEAM_COLORS.get(p["team"], TEAM_COLORS[-1])
+    for it in players_eff:
+        x, y = it["x"] * scale, it["y"] * scale
         r = 7 if mode == MODE_PLAYERS else 5
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=(0, 0, 0), width=2)
-        if mode == MODE_PLAYERS and p["id"] == selected_id:
+        if it["pending_delete"]:
+            draw.ellipse([x - r, y - r, x + r, y + r], outline=DELETE_COLOR, width=3)
+            draw.line([x - r, y - r, x + r, y + r], fill=DELETE_COLOR, width=2)
+            draw.line([x - r, y + r, x + r, y - r], fill=DELETE_COLOR, width=2)
+        else:
+            color = TEAM_COLORS.get(it["team"], TEAM_COLORS[-1]) if it["team"] is not None else (170, 170, 170)
+            outline = PENDING_COLOR if (it["pending_edit"] or it["is_draft"]) else (0, 0, 0)
+            width = 3 if outline == PENDING_COLOR else 2
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=outline, width=width)
+        if mode == MODE_PLAYERS and it["id"] == selected_id:
             draw.ellipse([x - r - 5, y - r - 5, x + r + 5, y + r + 5], outline=(255, 255, 0), width=3)
 
-    # palla: sempre visibile per contesto
-    if ball is not None:
+    if ball is not None and ball_draft != "REMOVE":
         x, y = ball["x"] * scale, ball["y"] * scale
         r = 8 if mode == MODE_BALL else 6
         draw.ellipse([x - r, y - r, x + r, y + r], fill=BALL_COLOR, outline=(0, 0, 0), width=2)
+    elif ball is not None and ball_draft == "REMOVE":
+        x, y = ball["x"] * scale, ball["y"] * scale
+        draw.ellipse([x - 8, y - 8, x + 8, y + 8], outline=DELETE_COLOR, width=3)
+    if isinstance(ball_draft, dict):
+        x, y = ball_draft["x"] * scale, ball_draft["y"] * scale
+        draw.ellipse([x - 9, y - 9, x + 9, y + 9], outline=PENDING_COLOR, width=3)
         if mode == MODE_BALL:
-            draw.ellipse([x - r - 5, y - r - 5, x + r + 5, y + r + 5], outline=(255, 255, 0), width=3)
+            draw.ellipse([x - 14, y - 14, x + 14, y + 14], outline=(255, 255, 0), width=3)
 
     if mode == MODE_CALIB:
         for i, c in enumerate(calib_points):
@@ -125,15 +236,15 @@ def frame_to_display_image(frame_bgr, mode, players, ball, calib_points, pending
             x, y = pending_click[0] * scale, pending_click[1] * scale
             draw.ellipse([x - 10, y - 10, x + 10, y + 10], outline=(255, 255, 255), width=3)
 
-    return img, scale
+    return img
 
 
-def nearest_player(players, x, y, max_dist=28):
+def nearest_item(items, x, y, max_dist=28):
     best, best_d = None, max_dist
-    for p in players:
-        d = ((p["x"] - x) ** 2 + (p["y"] - y) ** 2) ** 0.5
+    for it in items:
+        d = ((it["x"] - x) ** 2 + (it["y"] - y) ** 2) ** 0.5
         if d < best_d:
-            best, best_d = p, d
+            best, best_d = it, d
     return best
 
 
@@ -198,30 +309,18 @@ with st.sidebar:
                 if not ok or first_frame is None:
                     st.error("Non riesco a leggere il primo frame di questo video.")
                 else:
-                    st.session_state.frame = first_frame
-                    st.session_state.players = []
-                    st.session_state.ball = None
-                    st.session_state.calib_points = []
-                    st.session_state.detected_preview = None
-                    st.session_state.view = None
-                    st.session_state.calib_dirty = True
+                    set_frame(first_frame)
                     st.success(f"Primo frame estratto dal video ({first_frame.shape[1]}x{first_frame.shape[0]}).")
             elif suffix in IMAGE_EXT:
                 frame = cv2.imread(tmp_path)
                 if frame is None:
                     st.error("Non riesco a leggere questa immagine.")
                 else:
-                    st.session_state.frame = frame
-                    st.session_state.players = []
-                    st.session_state.ball = None
-                    st.session_state.calib_points = []
-                    st.session_state.detected_preview = None
-                    st.session_state.view = None
-                    st.session_state.calib_dirty = True
+                    set_frame(frame)
                     st.success(f"Immagine caricata ({frame.shape[1]}x{frame.shape[0]}).")
 
     st.divider()
-    conf = st.slider("Soglia di confidenza rilevamento", 0.10, 0.80, 0.30, 0.05)
+    conf = st.slider("Soglia di confidenza rilevamento", 0.10, 0.80, 0.15, 0.05)
 
     if st.button("🔍 Rileva giocatori", type="primary", disabled=st.session_state.frame is None,
                  use_container_width=True):
@@ -239,8 +338,8 @@ with st.sidebar:
         if c1.button("✅ Applica alla lista", type="primary", use_container_width=True):
             st.session_state.players = [dict(p) for p in prev]
             st.session_state.next_player_id = (max((p["id"] for p in prev), default=-1)) + 1
-            st.session_state.selected_player_id = None
             st.session_state.detected_preview = None
+            discard_all_pending()
             mark_dirty()
             st.rerun()
         if c2.button("✕ Scarta", use_container_width=True):
@@ -263,34 +362,44 @@ if st.session_state.frame is None:
 mode_label = st.radio("Modalità", ["🧍 Giocatori", "⚽ Palla", "📐 Calibrazione campo"], horizontal=True)
 mode = {"🧍 Giocatori": MODE_PLAYERS, "⚽ Palla": MODE_BALL, "📐 Calibrazione campo": MODE_CALIB}[mode_label]
 
+players_eff = effective_players()
+
 col_img, col_panel = st.columns([2.2, 1])
 
 with col_img:
-    img_disp, scale = frame_to_display_image(
-        st.session_state.frame, mode, st.session_state.players, st.session_state.ball,
-        st.session_state.calib_points, st.session_state.pending_click, st.session_state.selected_player_id
+    img_disp = render_display_image(
+        mode, st.session_state.base_img, st.session_state.img_scale, players_eff,
+        st.session_state.ball, st.session_state.ball_draft, st.session_state.calib_points,
+        st.session_state.pending_click, st.session_state.selected_player_id,
     )
     click = streamlit_image_coordinates(img_disp, key=f"img_{mode}")
 
     if mode == MODE_PLAYERS:
-        st.caption("Clicca su un giocatore per cambiarne la squadra o eliminarlo. "
-                   "Clicca su un punto vuoto per aggiungerne uno mancante.")
+        st.caption("Clicca su un giocatore per cambiarne la squadra o eliminarlo. Clicca su un punto vuoto "
+                   "per aggiungerne uno mancante. Le modifiche restano in bozza (bordo giallo) finché non "
+                   "premi **Applica tutte le modifiche** qui sotto.")
     elif mode == MODE_BALL:
-        st.caption("Clicca sulla posizione della palla per posizionarla (un nuovo clic la sposta).")
+        st.caption("Clicca sulla posizione della palla per posizionarla o spostarla (resta in bozza finché "
+                   "non applichi).")
     else:
         st.caption("Clicca su un punto riconoscibile del campo, poi scegli a cosa corrisponde nel pannello a destra.")
 
-# gestisci il clic (deduplicato rispetto all'ultimo elaborato)
+# gestisci il clic (deduplicato rispetto all'ultimo elaborato) — operazioni leggere, solo bozza
 if click is not None and click != st.session_state.last_raw_click:
     st.session_state.last_raw_click = click
-    ox, oy = click["x"] / scale, click["y"] / scale  # -> coordinate immagine originale
+    ox, oy = click["x"] / st.session_state.img_scale, click["y"] / st.session_state.img_scale
 
     if mode == MODE_PLAYERS:
-        hit = nearest_player(st.session_state.players, ox, oy)
-        st.session_state.selected_player_id = hit["id"] if hit else "NEW:%f:%f" % (ox, oy)
+        hit = nearest_item(players_eff, ox, oy)
+        if hit is not None:
+            st.session_state.selected_player_id = hit["id"]
+        else:
+            new_id = st.session_state.next_temp_id
+            st.session_state.next_temp_id -= 1
+            st.session_state.new_players_draft.append({"id": new_id, "x": ox, "y": oy, "team": None})
+            st.session_state.selected_player_id = new_id
     elif mode == MODE_BALL:
-        st.session_state.ball = {"x": ox, "y": oy}
-        mark_dirty()
+        st.session_state.ball_draft = {"x": ox, "y": oy}
     else:
         st.session_state.pending_click = (ox, oy)
     st.rerun()
@@ -302,61 +411,63 @@ if click is not None and click != st.session_state.last_raw_click:
 with col_panel:
     if mode == MODE_PLAYERS:
         sel = st.session_state.selected_player_id
-        if sel is None:
+        eff = next((it for it in players_eff if it["id"] == sel), None) if sel is not None else None
+        if eff is None:
+            st.session_state.selected_player_id = None
             st.info("Nessun giocatore selezionato.")
-        elif isinstance(sel, str) and sel.startswith("NEW:"):
-            _, sx, sy = sel.split(":")
-            st.warning("Nessun giocatore vicino a questo punto.")
-            new_team = st.selectbox("Squadra del nuovo giocatore", ["Squadra A", "Squadra B", "Arbitro/altro"])
-            if st.button("➕ Aggiungi qui", use_container_width=True):
-                team_val = {"Squadra A": 0, "Squadra B": 1, "Arbitro/altro": -1}[new_team]
-                st.session_state.players.append({
-                    "id": st.session_state.next_player_id, "bbox": None, "conf": None,
-                    "x": float(sx), "y": float(sy), "team": team_val,
-                })
-                st.session_state.next_player_id += 1
+        elif eff["is_draft"]:
+            st.warning("🆕 Nuovo giocatore in attesa di conferma.")
+            team_label = st.selectbox("Squadra", list(TEAM_LABELS.values()), key=f"team_new_{sel}")
+            draft = next(d for d in st.session_state.new_players_draft if d["id"] == sel)
+            draft["team"] = {v: k for k, v in TEAM_LABELS.items()}[team_label]
+            if st.button("🗑️ Rimuovi questo nuovo giocatore", use_container_width=True):
+                st.session_state.new_players_draft = [d for d in st.session_state.new_players_draft if d["id"] != sel]
                 st.session_state.selected_player_id = None
-                mark_dirty()
                 st.rerun()
         else:
-            p = next((pl for pl in st.session_state.players if pl["id"] == sel), None)
-            if p is None:
-                st.session_state.selected_player_id = None
-            else:
-                team_name = {0: "Squadra A", 1: "Squadra B", -1: "Arbitro/altro"}[p["team"]]
-                st.markdown(f"**Giocatore #{p['id']}** — squadra attuale: {team_name}")
-                c1, c2 = st.columns(2)
-                if c1.button("🟠 Squadra A", use_container_width=True):
-                    p["team"] = 0; mark_dirty(); st.rerun()
-                if c2.button("🔵 Squadra B", use_container_width=True):
-                    p["team"] = 1; mark_dirty(); st.rerun()
-                c3, c4 = st.columns(2)
-                if c3.button("⚪ Arbitro/altro", use_container_width=True):
-                    p["team"] = -1; mark_dirty(); st.rerun()
-                if c4.button("🗑️ Elimina", use_container_width=True):
-                    st.session_state.players = [pl for pl in st.session_state.players if pl["id"] != p["id"]]
-                    st.session_state.selected_player_id = None
-                    mark_dirty()
-                    st.rerun()
-
-        st.divider()
-        with st.expander("Reimposta tutti i giocatori"):
-            if st.button("Svuota la lista giocatori", use_container_width=True):
-                st.session_state.players = []
-                st.session_state.selected_player_id = None
-                mark_dirty()
+            status_bits = []
+            if eff["pending_edit"]:
+                status_bits.append("modifica squadra in attesa")
+            if eff["pending_delete"]:
+                status_bits.append("eliminazione in attesa")
+            status = f"  ⏳ _{', '.join(status_bits)}_" if status_bits else ""
+            st.markdown(f"**Giocatore #{eff['id']}** — squadra: {TEAM_LABELS[eff['team']]}{status}")
+            c1, c2 = st.columns(2)
+            if c1.button("🟠 Squadra A", use_container_width=True):
+                st.session_state.player_edits[eff["id"]] = 0; st.rerun()
+            if c2.button("🔵 Squadra B", use_container_width=True):
+                st.session_state.player_edits[eff["id"]] = 1; st.rerun()
+            c3, c4 = st.columns(2)
+            if c3.button("⚪ Arbitro/altro", use_container_width=True):
+                st.session_state.player_edits[eff["id"]] = -1; st.rerun()
+            del_label = "↩️ Annulla eliminazione" if eff["pending_delete"] else "🗑️ Elimina"
+            if c4.button(del_label, use_container_width=True):
+                if eff["pending_delete"]:
+                    st.session_state.players_to_delete.discard(eff["id"])
+                else:
+                    st.session_state.players_to_delete.add(eff["id"])
                 st.rerun()
 
     elif mode == MODE_BALL:
-        if st.session_state.ball is None:
-            st.info("Palla non ancora posizionata. Clicca sull'immagine a sinistra.")
-        else:
-            b = st.session_state.ball
-            st.markdown(f"**Palla** — posizione immagine: ({b['x']:.0f}, {b['y']:.0f})")
-            if st.button("🗑️ Rimuovi palla", use_container_width=True):
-                st.session_state.ball = None
-                mark_dirty()
+        draft = st.session_state.ball_draft
+        committed = st.session_state.ball
+        if draft == "REMOVE":
+            st.warning("🗑️ Eliminazione della palla in attesa di conferma.")
+            if st.button("↩️ Annulla eliminazione", use_container_width=True):
+                st.session_state.ball_draft = None
                 st.rerun()
+        elif isinstance(draft, dict):
+            st.warning(f"🆕 Nuova posizione in attesa: ({draft['x']:.0f}, {draft['y']:.0f})")
+            if st.button("✕ Annulla questa modifica", use_container_width=True):
+                st.session_state.ball_draft = None
+                st.rerun()
+        elif committed is not None:
+            st.markdown(f"**Palla** — posizione attuale: ({committed['x']:.0f}, {committed['y']:.0f})")
+            if st.button("🗑️ Rimuovi palla", use_container_width=True):
+                st.session_state.ball_draft = "REMOVE"
+                st.rerun()
+        else:
+            st.info("Palla non ancora posizionata. Clicca sull'immagine a sinistra.")
 
     else:  # calib mode
         if st.session_state.pending_click is None:
@@ -384,6 +495,24 @@ with col_panel:
                     st.session_state.calib_points.pop(i)
                     mark_dirty()
                     st.rerun()
+
+
+# ----------------------------------------------------------------------
+# Barra "modifiche in sospeso" — sempre visibile, valida per tutti i modi
+# ----------------------------------------------------------------------
+n_pending = pending_count()
+if n_pending > 0:
+    st.divider()
+    bar_l, bar_r = st.columns([3, 2])
+    bar_l.warning(f"✏️ **{n_pending}** modifica/che in attesa — non ancora definitive.")
+    with bar_r:
+        ca, cb = st.columns(2)
+        if ca.button("✅ Applica tutte le modifiche", type="primary", use_container_width=True):
+            apply_all_pending()
+            st.rerun()
+        if cb.button("✕ Scarta modifiche", use_container_width=True):
+            discard_all_pending()
+            st.rerun()
 
 
 # ----------------------------------------------------------------------
