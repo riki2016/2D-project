@@ -10,17 +10,27 @@ campo tramite clic diretto, e proiezione omografica sul campo regolamentare.
 - **Caricamento** di un'immagine o di un video (in questo caso viene usato automaticamente
   il primo frame).
 - **Rilevamento giocatori** con YOLOv8 (`ultralytics`) e **stima automatica della squadra**
-  per colore maglia (K-Means sul colore mediano del torso, in spazio HSV).
+  per colore maglia (K-Means sul colore mediano del torso, in spazio HSV). Il modello e il
+  risultato del rilevamento sono tenuti in cache (`st.cache_resource`/`st.cache_data`): premendo
+  di nuovo "Rileva giocatori" con la stessa immagine e soglia la risposta è immediata. Il
+  risultato va poi confermato con **"✅ Applica alla lista"**, così non sovrascrive per sbaglio
+  correzioni manuali già fatte.
 - **Validazione manuale per clic diretto sull'immagine**: clicca su un giocatore per
   cambiargli squadra o eliminarlo; clicca su un punto vuoto per aggiungerne uno mancante.
-- **Calibrazione del campo per clic diretto**: clicca un punto riconoscibile
-  dell'immagine (centro campo, dischetto di rigore, angoli, area di rigore...) e scegli
-  dal menu a cosa corrisponde — tutti i nomi sono relativi a ciò che vedi sullo schermo,
-  non alla porta di una squadra specifica. Funziona anche se il campo non è interamente
-  visibile nel frame, bastano 4 punti non allineati.
+- **Posizionamento della palla** (modalità "⚽ Palla"): clicca per posizionarla, un nuovo
+  clic la sposta; viene proiettata anch'essa sulla vista 2D e inclusa nell'esportazione.
+- **Calibrazione del campo per clic diretto**: clicca un punto riconoscibile dell'immagine e
+  scegli dal menu a cosa corrisponde. L'elenco è volutamente essenziale: dischetto di rigore
+  (sx/dx schermo), centrocampo, linea di centrocampo (incrocio alto/basso), i 4 corner e i
+  4 angoli dell'area di rigore grande — tutti i nomi sono relativi a ciò che vedi sullo
+  schermo, non alla porta di una squadra specifica. Funziona anche se il campo non è
+  interamente visibile nel frame, bastano 4 punti non allineati.
 - **Proiezione 2D in scala reale** tramite omografia (`cv2.findHomography`), con diagnostica
-  dell'errore di riproiezione per punto.
-- **Esportazione** dei risultati in CSV, JSON e immagine PNG della vista tattica.
+  dell'errore di riproiezione per punto. Anche qui il calcolo e il disegno della vista non
+  avvengono ad ogni clic: si aggiornano solo premendo **"🔄 Applica calibrazione / aggiorna
+  vista 2D"**, per restare reattivi durante la validazione.
+- **Esportazione** dei risultati (giocatori + palla) in CSV, JSON e immagine PNG della vista
+  tattica.
 
 ## Avvio in locale
 

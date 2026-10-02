@@ -16,39 +16,21 @@ PITCH_WIDTH = 68.0
 # Tutti i nomi sono relativi a come appare il campo SUL TUO SCHERMO in questo frame
 # (sinistra/destra, alto/basso dell'immagine) — non alla porta di una squadra o
 # dell'altra. Basta guardare dove sei inquadrato e scegliere il punto corrispondente.
+# Elenco volutamente ridotto ai soli punti richiesti.
 LANDMARKS = {
-    # --- centro campo ---
-    "Centro del campo (centro del cerchio di centrocampo)": (52.5, 34),
     "Dischetto di rigore — lato SINISTRO dello schermo": (11, 34),
     "Dischetto di rigore — lato DESTRO dello schermo": (94, 34),
-
-    # --- perimetro del campo: i 4 angoli, nominati come li vedi sullo schermo ---
-    "Angolo campo — ALTO SINISTRA": (0, 0),
-    "Angolo campo — ALTO DESTRA": (105, 0),
-    "Angolo campo — BASSO SINISTRA": (0, 68),
-    "Angolo campo — BASSO DESTRA": (105, 68),
-
-    # --- area di rigore sinistra: solo angoli ---
-    "Area rigore SINISTRA — angolo ALTO, sulla linea di fondo": (0, 13.84),
-    "Area rigore SINISTRA — angolo ALTO, bordo esterno area": (16.5, 13.84),
-    "Area rigore SINISTRA — angolo BASSO, bordo esterno area": (16.5, 54.16),
-    "Area rigore SINISTRA — angolo BASSO, sulla linea di fondo": (0, 54.16),
-
-    # --- area di rigore destra: solo angoli ---
-    "Area rigore DESTRA — angolo ALTO, sulla linea di fondo": (105, 13.84),
-    "Area rigore DESTRA — angolo ALTO, bordo esterno area": (88.5, 13.84),
-    "Area rigore DESTRA — angolo BASSO, bordo esterno area": (88.5, 54.16),
-    "Area rigore DESTRA — angolo BASSO, sulla linea di fondo": (105, 54.16),
-
-    # --- in alternativa ai 4 angoli: dove il bordo esterno dell'area incrocerebbe
-    # la linea laterale se prolungato — utile se vedi la laterale e il bordo area
-    # ma non l'angolo vero e proprio (es. inquadratura stretta) ---
-    "Area rigore SINISTRA — bordo area ∩ linea laterale ALTA": (16.5, 0),
-    "Area rigore SINISTRA — bordo area ∩ linea laterale BASSA": (16.5, 68),
-    "Area rigore DESTRA — bordo area ∩ linea laterale ALTA": (88.5, 0),
-    "Area rigore DESTRA — bordo area ∩ linea laterale BASSA": (88.5, 68),
-
-    "Punto personalizzato (coordinate X,Y mondo a mano)": None,
+    "Centrocampo (centro del cerchio di centrocampo)": (52.5, 34),
+    "Linea di centrocampo — incrocio ALTO (lato alto dello schermo)": (52.5, 0),
+    "Linea di centrocampo — incrocio BASSO (lato basso dello schermo)": (52.5, 68),
+    "Corner — ALTO DESTRA": (105, 0),
+    "Corner — BASSO DESTRA": (105, 68),
+    "Corner — ALTO SINISTRA": (0, 0),
+    "Corner — BASSO SINISTRA": (0, 68),
+    "Area di rigore grande — angolo ALTO DESTRA": (88.5, 13.84),
+    "Area di rigore grande — angolo BASSO DESTRA": (88.5, 54.16),
+    "Area di rigore grande — angolo ALTO SINISTRA": (16.5, 13.84),
+    "Area di rigore grande — angolo BASSO SINISTRA": (16.5, 54.16),
 }
 
 
