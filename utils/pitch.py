@@ -72,6 +72,16 @@ def draw_pitch(ax, bg_color="#0e2e18", line_color="#eafaf0"):
     ax.axis("off")
 
 
+def draw_grid(ax, h_lines, v_lines, color="#ffd23f", alpha=0.55):
+    """Disegna una griglia regolabile ("scacchiera") sul campo: h_lines sono posizioni Y
+    (linee orizzontali, 0-68 m), v_lines sono posizioni X (linee verticali, 0-105 m).
+    Ogni linea è indipendente dalle altre, non è richiesta una spaziatura regolare."""
+    for y in h_lines:
+        ax.plot([0, PITCH_LENGTH], [y, y], color=color, linewidth=1.3, linestyle="--", alpha=alpha, zorder=4)
+    for x in v_lines:
+        ax.plot([x, x], [0, PITCH_WIDTH], color=color, linewidth=1.3, linestyle="--", alpha=alpha, zorder=4)
+
+
 def compute_homography(calib_points):
     """calib_points: lista di dict {"img": (x,y), "world": (X,Y)}.
     Ritorna (H, errori_di_riproiezione) oppure (None, None) se non calcolabile."""

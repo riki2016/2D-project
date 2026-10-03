@@ -26,7 +26,8 @@ import matplotlib.pyplot as plt
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 from utils.detection import load_model, detect_players, assign_teams
-from utils.pitch import LANDMARKS, draw_pitch, compute_homography, project_point
+from utils.pitch import (LANDMARKS, PITCH_LENGTH, PITCH_WIDTH, draw_pitch, draw_grid,
+                          compute_homography, project_point)
 
 st.set_page_config(page_title="Vista Tattica dall'Alto", page_icon="⚽", layout="wide")
 
@@ -91,7 +92,13 @@ def init_state():
         "detected_preview": None,    # risultato rilevamento cache, in attesa di "Applica alla lista"
 
         "calib_dirty": True,         # True se la vista 2D va ricalcolata
-        "view": None,                # ultima vista 2D applicata: {H, errors, rows, png}
+        "view": None,                # ultima vista 2D applicata: {H, errors, rows, png, settings}
+
+        # --- opzioni di visualizzazione della vista 2D ---
+        "team_filter": "all",        # "all" | "A" | "B"
+        "show_grid": False,
+        "grid_h": [round(PITCH_WIDTH * i / 6, 1) for i in range(1, 6)],   # 5 linee orizzontali
+        "grid_v": [round(PITCH_LENGTH * i / 5, 1) for i in range(1, 5)],  # 4 linee verticali
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -248,15 +255,32 @@ def nearest_item(items, x, y, max_dist=28):
     return best
 
 
-def build_view(calib_points, players, ball):
+def current_view_settings():
+    return {
+        "team_filter": st.session_state.team_filter,
+        "show_grid": st.session_state.show_grid,
+        "grid_h": tuple(st.session_state.grid_h),
+        "grid_v": tuple(st.session_state.grid_v),
+    }
+
+
+def build_view(calib_points, players, ball, settings):
     """Calcola omografia + disegna la vista 2D. Ritorna un dict con H, errors, rows, png (bytes)
     oppure None se la calibrazione non è ancora valida."""
     H, errors = compute_homography(calib_points)
     if H is None:
         return None
 
+    team_filter = settings["team_filter"]
+    if team_filter == "A":
+        players = [p for p in players if p["team"] == 0]
+    elif team_filter == "B":
+        players = [p for p in players if p["team"] == 1]
+
     fig, ax = plt.subplots(figsize=(11, 7.2))
     draw_pitch(ax)
+    if settings["show_grid"]:
+        draw_grid(ax, settings["grid_h"], settings["grid_v"])
 
     rows = []
     for p in players:
@@ -281,7 +305,7 @@ def build_view(calib_points, players, ball):
     fig.savefig(png_buf, format="png", dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close(fig)
 
-    return {"H": H, "errors": errors, "rows": rows, "png": png_buf.getvalue()}
+    return {"H": H, "errors": errors, "rows": rows, "png": png_buf.getvalue(), "settings": settings}
 
 
 # ----------------------------------------------------------------------
@@ -525,12 +549,37 @@ n_calib = len(st.session_state.calib_points)
 if n_calib < 4:
     st.warning(f"Servono almeno 4 punti di calibrazione non allineati (attuali: {n_calib}).")
 else:
-    if st.session_state.calib_dirty:
-        st.warning("⚠️ Punti, giocatori o palla modificati dall'ultimo aggiornamento della vista 2D.")
+    with st.expander("⚙️ Opzioni vista 2D (squadra da mostrare, griglia)"):
+        filter_label = st.radio(
+            "Giocatori da mostrare",
+            ["Tutti", "Solo Squadra A", "Solo Squadra B"],
+            index={"all": 0, "A": 1, "B": 2}[st.session_state.team_filter],
+            horizontal=True,
+        )
+        st.session_state.team_filter = {"Tutti": "all", "Solo Squadra A": "A", "Solo Squadra B": "B"}[filter_label]
+
+        st.session_state.show_grid = st.checkbox("Mostra griglia (scacchiera) sul campo",
+                                                  value=st.session_state.show_grid)
+        if st.session_state.show_grid:
+            st.caption("5 linee orizzontali e 4 linee verticali, regolabili singolarmente (non devono "
+                       "essere equidistanti).")
+            gh_cols = st.columns(5)
+            for i, col in enumerate(gh_cols):
+                st.session_state.grid_h[i] = col.slider(
+                    f"Orizz. {i+1}", 0.0, PITCH_WIDTH, st.session_state.grid_h[i], 0.5, key=f"grid_h_{i}")
+            gv_cols = st.columns(4)
+            for i, col in enumerate(gv_cols):
+                st.session_state.grid_v[i] = col.slider(
+                    f"Vert. {i+1}", 0.0, PITCH_LENGTH, st.session_state.grid_v[i], 0.5, key=f"grid_v_{i}")
+
+    settings = current_view_settings()
+    settings_changed = st.session_state.view is None or st.session_state.view.get("settings") != settings
+    if st.session_state.calib_dirty or settings_changed:
+        st.warning("⚠️ Punti, giocatori, palla o opzioni di vista modificati dall'ultimo aggiornamento.")
     apply_label = "🔄 Applica calibrazione / aggiorna vista 2D" if st.session_state.view is not None \
         else "📐 Genera vista 2D"
     if st.button(apply_label, type="primary"):
-        result = build_view(st.session_state.calib_points, st.session_state.players, st.session_state.ball)
+        result = build_view(st.session_state.calib_points, st.session_state.players, st.session_state.ball, settings)
         if result is None:
             st.error("I punti scelti sono troppo allineati o coincidenti: la calibrazione non converge.")
         else:
