@@ -102,8 +102,8 @@ def init_state():
         # --- opzioni di visualizzazione della vista 2D ---
         "team_filter": "all",        # "all" | "A" | "B"
         "show_grid": False,
-        "grid_h": [round(PITCH_WIDTH * i / 6, 1) for i in range(1, 6)],   # 5 linee orizzontali
-        "grid_v": [round(PITCH_LENGTH * i / 5, 1) for i in range(1, 5)],  # 4 linee verticali
+        "grid_h": [round(PITCH_WIDTH * i / 5, 1) for i in range(1, 5)],   # 4 linee -> 5 canali orizzontali
+        "grid_v": [round(PITCH_LENGTH * i / 5, 1) for i in range(1, 5)],  # 4 linee -> 5 canali verticali
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -575,9 +575,9 @@ else:
         st.session_state.show_grid = st.checkbox("Mostra griglia (scacchiera) sul campo",
                                                   value=st.session_state.show_grid)
         if st.session_state.show_grid:
-            st.caption("5 linee orizzontali e 4 linee verticali, regolabili singolarmente (non devono "
-                       "essere equidistanti).")
-            gh_cols = st.columns(5)
+            st.caption("4 linee orizzontali (5 canali) e 4 linee verticali (5 canali), regolabili "
+                       "singolarmente — non devono essere equidistanti.")
+            gh_cols = st.columns(4)
             for i, col in enumerate(gh_cols):
                 st.session_state.grid_h[i] = col.slider(
                     f"Orizz. {i+1}", 0.0, PITCH_WIDTH, st.session_state.grid_h[i], 0.5, key=f"grid_h_{i}")
