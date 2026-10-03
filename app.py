@@ -31,6 +31,11 @@ from utils.pitch import (LANDMARKS, PITCH_LENGTH, PITCH_WIDTH, draw_pitch, draw_
 
 st.set_page_config(page_title="Vista Tattica dall'Alto", page_icon="⚽", layout="wide")
 
+# st.fragment (stabile da Streamlit 1.37) fa sì che i clic nell'area di editing
+# rifacciano girare solo quella porzione di pagina, non l'intero script — è questo
+# il cambiamento che rende l'interazione reattiva. Fallback per versioni più vecchie.
+FRAGMENT = getattr(st, "fragment", None) or st.experimental_fragment
+
 DISPLAY_MAX_W = 980
 TEAM_COLORS = {0: (224, 102, 43), 1: (36, 97, 201), -1: (138, 138, 128)}  # RGB
 TEAM_COLORS_HEX = {0: "#e0662b", 1: "#2461c9", -1: "#8a8a80"}
@@ -383,160 +388,169 @@ if st.session_state.frame is None:
     st.info("⬅️ Carica un'immagine o un video dalla barra laterale per iniziare.")
     st.stop()
 
-mode_label = st.radio("Modalità", ["🧍 Giocatori", "⚽ Palla", "📐 Calibrazione campo"], horizontal=True)
-mode = {"🧍 Giocatori": MODE_PLAYERS, "⚽ Palla": MODE_BALL, "📐 Calibrazione campo": MODE_CALIB}[mode_label]
+@FRAGMENT
+def editor_fragment():
+    """Tutta l'interazione a clic (giocatori, palla, calibrazione) vive qui dentro:
+    un clic rifà girare solo questa funzione, non l'intera pagina (sidebar inclusa)."""
+    mode_label = st.radio("Modalità", ["🧍 Giocatori", "⚽ Palla", "📐 Calibrazione campo"], horizontal=True)
+    mode = {"🧍 Giocatori": MODE_PLAYERS, "⚽ Palla": MODE_BALL, "📐 Calibrazione campo": MODE_CALIB}[mode_label]
 
-players_eff = effective_players()
+    players_eff = effective_players()
 
-col_img, col_panel = st.columns([2.2, 1])
+    col_img, col_panel = st.columns([2.2, 1])
 
-with col_img:
-    img_disp = render_display_image(
-        mode, st.session_state.base_img, st.session_state.img_scale, players_eff,
-        st.session_state.ball, st.session_state.ball_draft, st.session_state.calib_points,
-        st.session_state.pending_click, st.session_state.selected_player_id,
-    )
-    click = streamlit_image_coordinates(img_disp, key=f"img_{mode}")
+    with col_img:
+        img_disp = render_display_image(
+            mode, st.session_state.base_img, st.session_state.img_scale, players_eff,
+            st.session_state.ball, st.session_state.ball_draft, st.session_state.calib_points,
+            st.session_state.pending_click, st.session_state.selected_player_id,
+        )
+        click = streamlit_image_coordinates(img_disp, key=f"img_{mode}")
 
-    if mode == MODE_PLAYERS:
-        st.caption("Clicca su un giocatore per cambiarne la squadra o eliminarlo. Clicca su un punto vuoto "
-                   "per aggiungerne uno mancante. Le modifiche restano in bozza (bordo giallo) finché non "
-                   "premi **Applica tutte le modifiche** qui sotto.")
-    elif mode == MODE_BALL:
-        st.caption("Clicca sulla posizione della palla per posizionarla o spostarla (resta in bozza finché "
-                   "non applichi).")
-    else:
-        st.caption("Clicca su un punto riconoscibile del campo, poi scegli a cosa corrisponde nel pannello a destra.")
-
-# gestisci il clic (deduplicato rispetto all'ultimo elaborato) — operazioni leggere, solo bozza
-if click is not None and click != st.session_state.last_raw_click:
-    st.session_state.last_raw_click = click
-    ox, oy = click["x"] / st.session_state.img_scale, click["y"] / st.session_state.img_scale
-
-    if mode == MODE_PLAYERS:
-        hit = nearest_item(players_eff, ox, oy)
-        if hit is not None:
-            st.session_state.selected_player_id = hit["id"]
+        if mode == MODE_PLAYERS:
+            st.caption("Clicca su un giocatore per cambiarne la squadra o eliminarlo. Clicca su un punto vuoto "
+                       "per aggiungerne uno mancante. Le modifiche restano in bozza (bordo giallo) finché non "
+                       "premi **Applica tutte le modifiche** qui sotto.")
+        elif mode == MODE_BALL:
+            st.caption("Clicca sulla posizione della palla per posizionarla o spostarla (resta in bozza finché "
+                       "non applichi).")
         else:
-            new_id = st.session_state.next_temp_id
-            st.session_state.next_temp_id -= 1
-            st.session_state.new_players_draft.append({"id": new_id, "x": ox, "y": oy, "team": None})
-            st.session_state.selected_player_id = new_id
-    elif mode == MODE_BALL:
-        st.session_state.ball_draft = {"x": ox, "y": oy}
-    else:
-        st.session_state.pending_click = (ox, oy)
-    st.rerun()
+            st.caption("Clicca su un punto riconoscibile del campo, poi scegli a cosa corrisponde nel pannello a destra.")
 
+    # gestisci il clic (deduplicato rispetto all'ultimo elaborato) — operazioni leggere, solo bozza;
+    # rimanendo dentro il fragment, rifanno girare solo questa funzione, non l'intera pagina
+    if click is not None and click != st.session_state.last_raw_click:
+        st.session_state.last_raw_click = click
+        ox, oy = click["x"] / st.session_state.img_scale, click["y"] / st.session_state.img_scale
 
-# ----------------------------------------------------------------------
-# Pannello laterale contestuale
-# ----------------------------------------------------------------------
-with col_panel:
-    if mode == MODE_PLAYERS:
-        sel = st.session_state.selected_player_id
-        eff = next((it for it in players_eff if it["id"] == sel), None) if sel is not None else None
-        if eff is None:
-            st.session_state.selected_player_id = None
-            st.info("Nessun giocatore selezionato.")
-        elif eff["is_draft"]:
-            st.warning("🆕 Nuovo giocatore in attesa di conferma.")
-            team_label = st.selectbox("Squadra", list(TEAM_LABELS.values()), key=f"team_new_{sel}")
-            draft = next(d for d in st.session_state.new_players_draft if d["id"] == sel)
-            draft["team"] = {v: k for k, v in TEAM_LABELS.items()}[team_label]
-            if st.button("🗑️ Rimuovi questo nuovo giocatore", use_container_width=True):
-                st.session_state.new_players_draft = [d for d in st.session_state.new_players_draft if d["id"] != sel]
+        if mode == MODE_PLAYERS:
+            hit = nearest_item(players_eff, ox, oy)
+            if hit is not None:
+                st.session_state.selected_player_id = hit["id"]
+            else:
+                new_id = st.session_state.next_temp_id
+                st.session_state.next_temp_id -= 1
+                st.session_state.new_players_draft.append({"id": new_id, "x": ox, "y": oy, "team": None})
+                st.session_state.selected_player_id = new_id
+        elif mode == MODE_BALL:
+            st.session_state.ball_draft = {"x": ox, "y": oy}
+        else:
+            st.session_state.pending_click = (ox, oy)
+        st.rerun()
+
+    # ------------------------------------------------------------------
+    # Pannello laterale contestuale
+    # ------------------------------------------------------------------
+    with col_panel:
+        if mode == MODE_PLAYERS:
+            sel = st.session_state.selected_player_id
+            eff = next((it for it in players_eff if it["id"] == sel), None) if sel is not None else None
+            if eff is None:
                 st.session_state.selected_player_id = None
-                st.rerun()
-        else:
-            status_bits = []
-            if eff["pending_edit"]:
-                status_bits.append("modifica squadra in attesa")
-            if eff["pending_delete"]:
-                status_bits.append("eliminazione in attesa")
-            status = f"  ⏳ _{', '.join(status_bits)}_" if status_bits else ""
-            st.markdown(f"**Giocatore #{eff['id']}** — squadra: {TEAM_LABELS[eff['team']]}{status}")
-            c1, c2 = st.columns(2)
-            if c1.button("🟠 Squadra A", use_container_width=True):
-                st.session_state.player_edits[eff["id"]] = 0; st.rerun()
-            if c2.button("🔵 Squadra B", use_container_width=True):
-                st.session_state.player_edits[eff["id"]] = 1; st.rerun()
-            c3, c4 = st.columns(2)
-            if c3.button("⚪ Arbitro/altro", use_container_width=True):
-                st.session_state.player_edits[eff["id"]] = -1; st.rerun()
-            del_label = "↩️ Annulla eliminazione" if eff["pending_delete"] else "🗑️ Elimina"
-            if c4.button(del_label, use_container_width=True):
+                st.info("Nessun giocatore selezionato.")
+            elif eff["is_draft"]:
+                st.warning("🆕 Nuovo giocatore in attesa di conferma.")
+                team_label = st.selectbox("Squadra", list(TEAM_LABELS.values()), key=f"team_new_{sel}")
+                draft = next(d for d in st.session_state.new_players_draft if d["id"] == sel)
+                draft["team"] = {v: k for k, v in TEAM_LABELS.items()}[team_label]
+                if st.button("🗑️ Rimuovi questo nuovo giocatore", use_container_width=True):
+                    st.session_state.new_players_draft = [
+                        d for d in st.session_state.new_players_draft if d["id"] != sel]
+                    st.session_state.selected_player_id = None
+                    st.rerun()
+            else:
+                status_bits = []
+                if eff["pending_edit"]:
+                    status_bits.append("modifica squadra in attesa")
                 if eff["pending_delete"]:
-                    st.session_state.players_to_delete.discard(eff["id"])
-                else:
-                    st.session_state.players_to_delete.add(eff["id"])
-                st.rerun()
-
-    elif mode == MODE_BALL:
-        draft = st.session_state.ball_draft
-        committed = st.session_state.ball
-        if draft == "REMOVE":
-            st.warning("🗑️ Eliminazione della palla in attesa di conferma.")
-            if st.button("↩️ Annulla eliminazione", use_container_width=True):
-                st.session_state.ball_draft = None
-                st.rerun()
-        elif isinstance(draft, dict):
-            st.warning(f"🆕 Nuova posizione in attesa: ({draft['x']:.0f}, {draft['y']:.0f})")
-            if st.button("✕ Annulla questa modifica", use_container_width=True):
-                st.session_state.ball_draft = None
-                st.rerun()
-        elif committed is not None:
-            st.markdown(f"**Palla** — posizione attuale: ({committed['x']:.0f}, {committed['y']:.0f})")
-            if st.button("🗑️ Rimuovi palla", use_container_width=True):
-                st.session_state.ball_draft = "REMOVE"
-                st.rerun()
-        else:
-            st.info("Palla non ancora posizionata. Clicca sull'immagine a sinistra.")
-
-    else:  # calib mode
-        if st.session_state.pending_click is None:
-            st.info("Clicca un punto sull'immagine a sinistra.")
-        else:
-            landmark = st.selectbox("A cosa corrisponde questo punto?", list(LANDMARKS.keys()))
-            if st.button("✅ Conferma punto", type="primary", use_container_width=True):
-                st.session_state.calib_points.append({
-                    "img": st.session_state.pending_click, "world": LANDMARKS[landmark], "label": landmark,
-                })
-                st.session_state.pending_click = None
-                mark_dirty()
-                st.rerun()
-            if st.button("Annulla", use_container_width=True):
-                st.session_state.pending_click = None
-                st.rerun()
-
-        if st.session_state.calib_points:
-            st.divider()
-            st.markdown("**Punti di calibrazione:**")
-            for i, c in enumerate(st.session_state.calib_points):
-                cc1, cc2 = st.columns([5, 1])
-                cc1.caption(f"{i+1}. {c['label']}")
-                if cc2.button("✕", key=f"del_calib_{i}"):
-                    st.session_state.calib_points.pop(i)
-                    mark_dirty()
+                    status_bits.append("eliminazione in attesa")
+                status = f"  ⏳ _{', '.join(status_bits)}_" if status_bits else ""
+                st.markdown(f"**Giocatore #{eff['id']}** — squadra: {TEAM_LABELS[eff['team']]}{status}")
+                c1, c2 = st.columns(2)
+                if c1.button("🟠 Squadra A", use_container_width=True):
+                    st.session_state.player_edits[eff["id"]] = 0; st.rerun()
+                if c2.button("🔵 Squadra B", use_container_width=True):
+                    st.session_state.player_edits[eff["id"]] = 1; st.rerun()
+                c3, c4 = st.columns(2)
+                if c3.button("⚪ Arbitro/altro", use_container_width=True):
+                    st.session_state.player_edits[eff["id"]] = -1; st.rerun()
+                del_label = "↩️ Annulla eliminazione" if eff["pending_delete"] else "🗑️ Elimina"
+                if c4.button(del_label, use_container_width=True):
+                    if eff["pending_delete"]:
+                        st.session_state.players_to_delete.discard(eff["id"])
+                    else:
+                        st.session_state.players_to_delete.add(eff["id"])
                     st.rerun()
 
+        elif mode == MODE_BALL:
+            draft = st.session_state.ball_draft
+            committed = st.session_state.ball
+            if draft == "REMOVE":
+                st.warning("🗑️ Eliminazione della palla in attesa di conferma.")
+                if st.button("↩️ Annulla eliminazione", use_container_width=True):
+                    st.session_state.ball_draft = None
+                    st.rerun()
+            elif isinstance(draft, dict):
+                st.warning(f"🆕 Nuova posizione in attesa: ({draft['x']:.0f}, {draft['y']:.0f})")
+                if st.button("✕ Annulla questa modifica", use_container_width=True):
+                    st.session_state.ball_draft = None
+                    st.rerun()
+            elif committed is not None:
+                st.markdown(f"**Palla** — posizione attuale: ({committed['x']:.0f}, {committed['y']:.0f})")
+                if st.button("🗑️ Rimuovi palla", use_container_width=True):
+                    st.session_state.ball_draft = "REMOVE"
+                    st.rerun()
+            else:
+                st.info("Palla non ancora posizionata. Clicca sull'immagine a sinistra.")
 
-# ----------------------------------------------------------------------
-# Barra "modifiche in sospeso" — sempre visibile, valida per tutti i modi
-# ----------------------------------------------------------------------
-n_pending = pending_count()
-if n_pending > 0:
-    st.divider()
-    bar_l, bar_r = st.columns([3, 2])
-    bar_l.warning(f"✏️ **{n_pending}** modifica/che in attesa — non ancora definitive.")
-    with bar_r:
-        ca, cb = st.columns(2)
-        if ca.button("✅ Applica tutte le modifiche", type="primary", use_container_width=True):
-            apply_all_pending()
-            st.rerun()
-        if cb.button("✕ Scarta modifiche", use_container_width=True):
-            discard_all_pending()
-            st.rerun()
+        else:  # calib mode
+            if st.session_state.pending_click is None:
+                st.info("Clicca un punto sull'immagine a sinistra.")
+            else:
+                landmark = st.selectbox("A cosa corrisponde questo punto?", list(LANDMARKS.keys()))
+                if st.button("✅ Conferma punto", type="primary", use_container_width=True):
+                    st.session_state.calib_points.append({
+                        "img": st.session_state.pending_click, "world": LANDMARKS[landmark], "label": landmark,
+                    })
+                    st.session_state.pending_click = None
+                    mark_dirty()
+                    st.rerun()
+                if st.button("Annulla", use_container_width=True):
+                    st.session_state.pending_click = None
+                    st.rerun()
+
+            if st.session_state.calib_points:
+                st.divider()
+                st.markdown("**Punti di calibrazione:**")
+                for i, c in enumerate(st.session_state.calib_points):
+                    cc1, cc2 = st.columns([5, 1])
+                    cc1.caption(f"{i+1}. {c['label']}")
+                    if cc2.button("✕", key=f"del_calib_{i}"):
+                        st.session_state.calib_points.pop(i)
+                        mark_dirty()
+                        st.rerun()
+
+    # ------------------------------------------------------------------
+    # Barra "modifiche in sospeso" — dentro il fragment così resta rapida,
+    # tranne "Applica" che forza un rerun di tutta la pagina: deve aggiornare
+    # anche il contatore in sidebar e la sezione Vista 2D qui sotto.
+    # ------------------------------------------------------------------
+    n_pending = pending_count()
+    if n_pending > 0:
+        st.divider()
+        bar_l, bar_r = st.columns([3, 2])
+        bar_l.warning(f"✏️ **{n_pending}** modifica/che in attesa — non ancora definitive.")
+        with bar_r:
+            ca, cb = st.columns(2)
+            if ca.button("✅ Applica tutte le modifiche", type="primary", use_container_width=True):
+                apply_all_pending()
+                st.rerun(scope="app")
+            if cb.button("✕ Scarta modifiche", use_container_width=True):
+                discard_all_pending()
+                st.rerun()
+
+
+editor_fragment()
 
 
 # ----------------------------------------------------------------------

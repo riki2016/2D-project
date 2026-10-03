@@ -43,6 +43,19 @@ Il primo rilevamento scarica automaticamente i pesi `yolov8n.pt` (modello legger
 `ultralytics`); per maggiore accuratezza si può sostituire con `yolov8s.pt` o `yolov8m.pt`
 in `utils/detection.py` (funzione `load_model`).
 
+**Eseguirla in locale (sul tuo PC) invece che su un servizio cloud elimina la latenza di
+rete ad ogni clic** e sfrutta la tua CPU/GPU per YOLO — è il modo più semplice per renderla
+più reattiva senza toccare il codice.
+
+### Perché l'interazione a clic è reattiva
+
+Streamlit normalmente rifà girare l'intero script ad ogni interazione. Quest'app isola
+l'area di clic (giocatori, palla, calibrazione) in un **fragment** (`@st.fragment`,
+richiede `streamlit>=1.37`): un clic lì dentro rifà girare solo quella porzione di pagina,
+non l'intera app (sidebar e upload inclusi). Il contatore in sidebar e la sezione "Vista 2D"
+si aggiornano quando premi un pulsante "Applica" (che forza un aggiornamento completo) o
+quando interagisci con qualcosa fuori dal fragment.
+
 ## Deploy su Streamlit Community Cloud
 
 1. Pusha questo repository su GitHub.
